@@ -33,6 +33,10 @@
   }
   button.secondary { background: #2a2a33; color: var(--text); }
   button:disabled { opacity: .5; cursor: default; }
+  .daterow { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .daterow label { margin: 0; white-space: nowrap; font-size: 1rem; color: var(--text); }
+  .daterow input { flex: 1 1 auto; color-scheme: dark; }
+  .daterow button { padding: 12px 14px; }
   .or { text-align: center; color: var(--muted); font-size: .85rem; margin: 12px 0; }
   a { color: var(--accent-2); }
   #status { margin: 18px 2px; color: var(--muted); min-height: 1.4em; }
@@ -66,6 +70,11 @@
   </header>
 
   <div class="panel">
+    <div class="daterow">
+      <label for="day">📅 Date</label>
+      <input type="date" id="day">
+      <button type="button" id="todayBtn" class="secondary">Today</button>
+    </div>
     <button id="nearMe" style="width:100%">📍 Who's playing near me</button>
     <div class="or">or search a place</div>
     <form id="searchForm" class="row">
@@ -105,8 +114,23 @@
   // ---------- date ----------
   const now = new Date();
   const pad = (n) => String(n).padStart(2, "0");
-  const ymd = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-  $("today").textContent = now.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  const toYmd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const todayYmd = toYmd(now);
+  const dayInput = $("day");
+  dayInput.value = todayYmd;
+  dayInput.min = todayYmd;
+  const ymd = () => dayInput.value || todayYmd;
+  const isToday = () => ymd() === todayYmd;
+  const dayLabel = () => {
+    const [y, m, d] = ymd().split("-").map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  };
+  const whenText = () => isToday() ? "today" : `on ${dayLabel()}`;
+  const showDate = () => { $("today").textContent = dayLabel(); };
+  showDate();
+  let lastSearch = null; // re-run the last search when the date changes
+  dayInput.addEventListener("change", () => { showDate(); if (lastSearch) lastSearch(); });
+  $("todayBtn").addEventListener("click", () => { dayInput.value = todayYmd; showDate(); if (lastSearch) lastSearch(); });
 
   // ---------- API key ----------
   const TM_KEY = "uFdFU8rGqFvKCkO5Jurt2VUNq9H1Wcsx";
@@ -136,7 +160,7 @@
     const p = new URLSearchParams({
       apikey: key,
       classificationName: "music",
-      localStartDateTime: `${ymd}T00:00:00,${ymd}T23:59:59`,
+      localStartDateTime: `${ymd()}T00:00:00,${ymd()}T23:59:59`,
       sort: "date,asc",
       size: "100",
       ...locParams
@@ -263,10 +287,10 @@
   function render(acts, where) {
     resultsEl.innerHTML = "";
     if (!acts.length) {
-      setStatus(`No music listed on Ticketmaster ${where} today. Try a bigger radius or a nearby city.`);
+      setStatus(`No music listed on Ticketmaster ${where} ${whenText()}. Try a bigger radius or a nearby city.`);
       return;
     }
-    setStatus(`${acts.length} act${acts.length === 1 ? "" : "s"} playing ${where} today. Tap ▶ for a sample.`);
+    setStatus(`${acts.length} act${acts.length === 1 ? "" : "s"} playing ${where} ${whenText()}. Tap ▶ for a sample.`);
     for (const act of acts) {
       const row = document.createElement("div");
       row.className = "act";
@@ -297,9 +321,10 @@
   }
 
   async function run(locParams, where) {
+    lastSearch = () => run(locParams, where);
     stopCurrent();
     resultsEl.innerHTML = "";
-    setStatus("Looking up today's shows…");
+    setStatus("Looking up shows…");
     try {
       const events = await fetchShows(locParams);
       render(toActs(events), where);
@@ -311,7 +336,7 @@
   // Ticketmaster's postalCode filter only matches venues inside that exact ZIP,
   // so turn the ZIP into coordinates and do a radius search around it.
   async function searchZip(zip, radius) {
-    setStatus("Looking up today's shows…");
+    setStatus("Looking up shows…");
     let geo = null;
     try {
       const ctrl = new AbortController();
@@ -353,7 +378,7 @@
     UT:"Utah",VT:"Vermont",VA:"Virginia",WA:"Washington",WV:"West Virginia",WI:"Wisconsin",WY:"Wyoming" };
 
   async function searchCity(place, radius) {
-    setStatus("Looking up today's shows…");
+    setStatus("Looking up shows…");
     const [city, stateRaw] = place.split(",").map(s => s.trim());
     let state = (stateRaw || "").toLowerCase();
     if (STATES[state.toUpperCase()]) state = STATES[state.toUpperCase()].toLowerCase();
