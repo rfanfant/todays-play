@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Today's Play</title>
+<meta name="description" content="Who's playing near you today, with a sample of their music.">
+<style>
+  :root {
+    --bg: #0f0f12; --card: #1a1a20; --line: #2a2a33; --text: #f2f2f5;
+    --muted: #9a9aa8; --accent: #ff5a5f; --accent-2: #ffb347; --ok: #4cd18a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 24px 16px 96px; }
+  header h1 { margin: 0; font-size: 2.2rem; letter-spacing: -0.02em; }
+  header h1 span { color: var(--accent); }
+  .date { color: var(--muted); margin: 4px 0 20px; }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
+  label { display: block; font-size: .85rem; color: var(--muted); margin-bottom: 6px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  input, select {
+    flex: 1 1 180px; min-width: 0; padding: 12px; border-radius: 10px; border: 1px solid var(--line);
+    background: #111116; color: var(--text); font-size: 1rem;
+  }
+  select { flex: 0 0 auto; }
+  button {
+    padding: 12px 16px; border-radius: 10px; border: 0; cursor: pointer; font-weight: 600;
+    font-size: 1rem; background: var(--accent); color: #fff;
+  }
+  button.secondary { background: #2a2a33; color: var(--text); }
+  button:disabled { opacity: .5; cursor: default; }
+  .or { text-align: center; color: var(--muted); font-size: .85rem; margin: 12px 0; }
+  details { margin-top: 14px; color: var(--muted); font-size: .9rem; }
+  details summary { cursor: pointer; }
+  details .row { margin-top: 8px; }
+  a { color: var(--accent-2); }
+  #status { margin: 18px 2px; color: var(--muted); min-height: 1.4em; }
+  #status.error { color: var(--accent); }
+  .list { display: grid; gap: 10px; }
+  .act {
+    display: grid; grid-template-columns: 64px 1fr auto; gap: 12px; align-items: center;
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 10px;
+  }
+  .act img, .act .ph { width: 64px; height: 64px; border-radius: 10px; object-fit: cover; background: #23232b; }
+  .act .name { font-weight: 700; }
+  .act .meta { color: var(--muted); font-size: .85rem; }
+  .act .meta a { color: var(--muted); }
+  .act .track { font-size: .8rem; color: var(--ok); margin-top: 2px; }
+  .act .track.none { color: var(--muted); }
+  .play {
+    width: 48px; height: 48px; border-radius: 50%; padding: 0; font-size: 1.1rem;
+    display: grid; place-items: center;
+  }
+  .play.playing { background: var(--ok); }
+  .bar { height: 3px; background: var(--line); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--ok); }
+  footer { color: var(--muted); font-size: .8rem; margin-top: 32px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Today's <span>Play</span></h1>
+    <div class="date" id="today"></div>
+  </header>
+
+  <div class="panel">
+    <button id="nearMe" style="width:100%">📍 Who's playing near me</button>
+    <div class="or">or search a place</div>
+    <form id="searchForm" class="row">
+      <input id="place" placeholder="City or ZIP (e.g. Seattle or 98052)" autocomplete="off">
+      <select id="radius" aria-label="Radius">
+        <option value="10">10 mi</option>
+        <option value="25" selected>25 mi</option>
+        <option value="50">50 mi</option>
+      </select>
+      <button type="submit">Go</button>
+    </form>
+    <details id="keyBox">
+      <summary>Ticketmaster API key</summary>
+      <p>Get a free key at <a href="https://developer.ticketmaster.com/" target="_blank" rel="noopener">developer.ticketmaster.com</a> (it's the "Consumer Key"). It's saved only in this browser.</p>
+      <div class="row">
+        <input id="apiKey" placeholder="Paste your key" autocomplete="off">
+        <button id="saveKey" class="secondary" type="button">Save</button>
+      </div>
+    </details>
+  </div>
+
+  <div id="status"></div>
+  <div id="results" class="list"></div>
+
+  <footer>
+    Shows from the Ticketmaster Discovery API. 30-second samples from the iTunes Search API.
+    Based on the 2019 Today's Play class project.
+  </footer>
+</div>
+
+<audio id="player" preload="none"></audio>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const statusEl = $("status"), resultsEl = $("results"), player = $("player");
+
+  // ---------- storage (may be unavailable) ----------
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch {} }
+  };
+
+  // ---------- date ----------
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const ymd = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  $("today").textContent = now.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+
+  // ---------- API key ----------
+  // Optional: hard-code a key here for your own deployment. Leave empty to have users paste their own.
+  const DEFAULT_TM_KEY = "";
+  $("apiKey").value = store.get("tmKey") || "";
+  const getKey = () => ($("apiKey").value.trim() || DEFAULT_TM_KEY);
+  $("saveKey").addEventListener("click", () => {
+    store.set("tmKey", $("apiKey").value.trim());
+    setStatus("Key saved.");
+  });
+  if (!getKey()) $("keyBox").open = true;
+
+  function setStatus(msg, isError = false) {
+    statusEl.textContent = msg;
+    statusEl.className = isError ? "error" : "";
+  }
+
+  // ---------- geohash (Ticketmaster geoPoint) ----------
+  function geohash(lat, lon, precision = 9) {
+    const base32 = "0123456789bcdefghjkmnpqrstuvwxyz";
+    let latR = [-90, 90], lonR = [-180, 180], hash = "", bit = 0, ch = 0, even = true;
+    while (hash.length < precision) {
+      const r = even ? lonR : latR, v = even ? lon : lat, mid = (r[0] + r[1]) / 2;
+      if (v >= mid) { ch = (ch << 1) | 1; r[0] = mid; } else { ch = ch << 1; r[1] = mid; }
+      even = !even;
+      if (++bit === 5) { hash += base32[ch]; bit = 0; ch = 0; }
+    }
+    return hash;
+  }
+
+  // ---------- Ticketmaster ----------
+  async function fetchShows(locParams) {
+    const key = getKey();
+    if (!key) {
+      $("keyBox").open = true;
+      throw new Error("Add your Ticketmaster API key first (below the search box).");
+    }
+    const p = new URLSearchParams({
+      apikey: key,
+      classificationName: "music",
+      localStartDateTime: `${ymd}T00:00:00,${ymd}T23:59:59`,
+      sort: "date,asc",
+      size: "100",
+      ...locParams
+    });
+    const res = await fetch(`https://app.ticketmaster.com/discovery/v2/events.json?${p}`);
+    if (res.status === 401) throw new Error("Ticketmaster rejected the API key. Check it and try again.");
+    if (res.status === 429) throw new Error("Ticketmaster rate limit hit. Wait a minute and try again.");
+    if (!res.ok) throw new Error(`Ticketmaster error (${res.status}).`);
+    const data = await res.json();
+    return (data._embedded && data._embedded.events) || [];
+  }
+
+  // One row per artist; headliners first, openers after, deduped across events.
+  function toActs(events) {
+    const acts = new Map();
+    for (const ev of events) {
+      const venue = ev._embedded?.venues?.[0];
+      const attractions = ev._embedded?.attractions || [];
+      const names = attractions.length ? attractions.map(a => ({ name: a.name, img: pickImage(a.images) }))
+                                       : [{ name: ev.name, img: null }];
+      names.forEach((a, i) => {
+        const k = norm(a.name);
+        if (!k || acts.has(k)) return;
+        acts.set(k, {
+          name: a.name,
+          opener: i > 0,
+          image: a.img || pickImage(ev.images),
+          venue: venue?.name || "",
+          city: venue?.city?.name || "",
+          time: ev.dates?.start?.localTime || "",
+          url: ev.url || ""
+        });
+      });
+    }
+    return [...acts.values()].sort((a, b) => (a.opener - b.opener));
+  }
+
+  function pickImage(imgs) {
+    if (!imgs || !imgs.length) return null;
+    const sq = imgs.filter(i => i.ratio === "1_1" || i.ratio === "4_3");
+    const pool = sq.length ? sq : imgs;
+    return pool.slice().sort((a, b) => a.width - b.width).find(i => i.width >= 120)?.url || pool[0].url;
+  }
+
+  const norm = (s) => (s || "").toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "")
+                                .replace(/^the\s+/, "").replace(/[^a-z0-9]/g, "");
+
+  function fmtTime(t) {
+    if (!t) return "";
+    const [h, m] = t.split(":").map(Number);
+    const d = new Date(); d.setHours(h, m, 0, 0);
+    return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  }
+
+  // ---------- iTunes previews (JSONP: works without CORS) ----------
+  let jsonpId = 0;
+  function jsonp(url) {
+    return new Promise((resolve, reject) => {
+      const cb = `__itunes_cb_${++jsonpId}`;
+      const s = document.createElement("script");
+      const timer = setTimeout(() => { cleanup(); reject(new Error("timeout")); }, 10000);
+      function cleanup() { clearTimeout(timer); delete window[cb]; s.remove(); }
+      window[cb] = (data) => { cleanup(); resolve(data); };
+      s.onerror = () => { cleanup(); reject(new Error("network")); };
+      s.src = `${url}&callback=${cb}`;
+      document.head.appendChild(s);
+    });
+  }
+
+  const previewCache = new Map();
+  async function findPreview(artist) {
+    const k = norm(artist);
+    if (previewCache.has(k)) return previewCache.get(k);
+    const q = new URLSearchParams({ term: artist, entity: "song", attribute: "artistTerm", limit: "10", country: "US" });
+    const data = await jsonp(`https://itunes.apple.com/search?${q}`);
+    const results = (data.results || []).filter(r => r.previewUrl);
+    // Only accept an exact artist-name match, so we never play the wrong band.
+    const hit = results.find(r => norm(r.artistName) === k) || null;
+    const out = hit ? { url: hit.previewUrl, title: hit.trackName, link: hit.trackViewUrl } : null;
+    previewCache.set(k, out);
+    return out;
+  }
+
+  // ---------- playback ----------
+  let currentBtn = null;
+  function stopCurrent() {
+    player.pause();
+    if (currentBtn) {
+      currentBtn.textContent = "▶"; currentBtn.classList.remove("playing");
+      const bar = currentBtn.closest(".act").querySelector(".bar i"); if (bar) bar.style.width = "0";
+    }
+    currentBtn = null;
+  }
+  player.addEventListener("timeupdate", () => {
+    if (!currentBtn || !player.duration) return;
+    const bar = currentBtn.closest(".act").querySelector(".bar i");
+    if (bar) bar.style.width = `${(player.currentTime / player.duration) * 100}%`;
+  });
+  player.addEventListener("ended", stopCurrent);
+
+  async function onPlay(btn, act, trackEl) {
+    if (currentBtn === btn) { stopCurrent(); return; }
+    stopCurrent();
+    btn.disabled = true; btn.textContent = "…";
+    try {
+      const pv = await findPreview(act.name);
+      if (!pv) {
+        trackEl.textContent = "No sample found"; trackEl.classList.add("none");
+        btn.textContent = "–"; return;
+      }
+      trackEl.textContent = `♪ ${pv.title}`;
+      player.src = pv.url;
+      await player.play();
+      currentBtn = btn; btn.textContent = "❚❚"; btn.classList.add("playing");
+    } catch (e) {
+      trackEl.textContent = "Couldn't load a sample"; trackEl.classList.add("none");
+      btn.textContent = "▶";
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ---------- render ----------
+  function render(acts, where) {
+    resultsEl.innerHTML = "";
+    if (!acts.length) {
+      setStatus(`No music listed on Ticketmaster for ${where} today. Try a bigger radius or a nearby city.`);
+      return;
+    }
+    setStatus(`${acts.length} act${acts.length === 1 ? "" : "s"} playing ${where} today. Tap ▶ for a sample.`);
+    for (const act of acts) {
+      const row = document.createElement("div");
+      row.className = "act";
+
+      const img = document.createElement(act.image ? "img" : "div");
+      if (act.image) { img.src = act.image; img.alt = ""; img.loading = "lazy"; } else img.className = "ph";
+
+      const info = document.createElement("div");
+      const name = document.createElement("div"); name.className = "name";
+      name.textContent = act.name + (act.opener ? " (opener)" : "");
+      const meta = document.createElement("div"); meta.className = "meta";
+      const bits = [act.venue, act.city, fmtTime(act.time)].filter(Boolean).join(" · ");
+      if (act.url) {
+        const a = document.createElement("a"); a.href = act.url; a.target = "_blank"; a.rel = "noopener";
+        a.textContent = bits || "Tickets"; meta.appendChild(a);
+      } else meta.textContent = bits;
+      const track = document.createElement("div"); track.className = "track";
+      const bar = document.createElement("div"); bar.className = "bar"; bar.appendChild(document.createElement("i"));
+      info.append(name, meta, track, bar);
+
+      const btn = document.createElement("button");
+      btn.className = "play"; btn.textContent = "▶"; btn.setAttribute("aria-label", `Play a sample of ${act.name}`);
+      btn.addEventListener("click", () => onPlay(btn, act, track));
+
+      row.append(img, info, btn);
+      resultsEl.appendChild(row);
+    }
+  }
+
+  async function run(locParams, where) {
+    stopCurrent();
+    resultsEl.innerHTML = "";
+    setStatus("Looking up today's shows…");
+    try {
+      const events = await fetchShows(locParams);
+      render(toActs(events), where);
+    } catch (e) {
+      setStatus(e.message || "Something went wrong.", true);
+    }
+  }
+
+  // ---------- inputs ----------
+  $("searchForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const place = $("place").value.trim();
+    if (!place) { setStatus("Type a city or ZIP code.", true); return; }
+    store.set("lastPlace", place);
+    const radius = $("radius").value;
+    if (/^\d{5}$/.test(place)) run({ postalCode: place, radius, unit: "miles" }, `near ${place}`);
+    else {
+      const [city, state] = place.split(",").map(s => s.trim());
+      const p = { city };
+      if (state && /^[A-Za-z]{2}$/.test(state)) p.stateCode = state.toUpperCase();
+      run(p, `in ${city}`);
+    }
+  });
+
+  $("nearMe").addEventListener("click", () => {
+    if (!navigator.geolocation) { setStatus("Location isn't available in this browser. Search a city instead.", true); return; }
+    setStatus("Finding you…");
+    navigator.geolocation.getCurrentPosition(
+      (pos) => run({ geoPoint: geohash(pos.coords.latitude, pos.coords.longitude), radius: $("radius").value, unit: "miles" }, "near you"),
+      () => setStatus("Couldn't get your location. Search a city or ZIP instead.", true),
+      { timeout: 10000, maximumAge: 600000 }
+    );
+  });
+
+  const last = store.get("lastPlace");
+  if (last) $("place").value = last;
+})();
+</script>
+</body>
+</html>
