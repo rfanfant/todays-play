@@ -34,9 +34,6 @@
   button.secondary { background: #2a2a33; color: var(--text); }
   button:disabled { opacity: .5; cursor: default; }
   .or { text-align: center; color: var(--muted); font-size: .85rem; margin: 12px 0; }
-  details { margin-top: 14px; color: var(--muted); font-size: .9rem; }
-  details summary { cursor: pointer; }
-  details .row { margin-top: 8px; }
   a { color: var(--accent-2); }
   #status { margin: 18px 2px; color: var(--muted); min-height: 1.4em; }
   #status.error { color: var(--accent); }
@@ -80,14 +77,6 @@
       </select>
       <button type="submit">Go</button>
     </form>
-    <details id="keyBox">
-      <summary>Ticketmaster API key</summary>
-      <p>Get a free key at <a href="https://developer.ticketmaster.com/" target="_blank" rel="noopener">developer.ticketmaster.com</a> (it's the "Consumer Key"). It's saved only in this browser.</p>
-      <div class="row">
-        <input id="apiKey" placeholder="Paste your key" autocomplete="off">
-        <button id="saveKey" class="secondary" type="button">Save</button>
-      </div>
-    </details>
   </div>
 
   <div id="status"></div>
@@ -120,15 +109,8 @@
   $("today").textContent = now.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
 
   // ---------- API key ----------
-  // Optional: hard-code a key here for your own deployment. Leave empty to have users paste their own.
-  const DEFAULT_TM_KEY = "uFdFU8rGqFvKCkO5Jurt2VUNq9H1Wcsx";
-  $("apiKey").value = store.get("tmKey") || "";
-  const getKey = () => ($("apiKey").value.trim() || DEFAULT_TM_KEY);
-  $("saveKey").addEventListener("click", () => {
-    store.set("tmKey", $("apiKey").value.trim());
-    setStatus("Key saved.");
-  });
-  if (!getKey()) $("keyBox").open = true;
+  const TM_KEY = "uFdFU8rGqFvKCkO5Jurt2VUNq9H1Wcsx";
+  try { localStorage.removeItem("tmKey"); } catch {}
 
   function setStatus(msg, isError = false) {
     statusEl.textContent = msg;
@@ -150,11 +132,7 @@
 
   // ---------- Ticketmaster ----------
   async function fetchShows(locParams) {
-    const key = getKey();
-    if (!key) {
-      $("keyBox").open = true;
-      throw new Error("Add your Ticketmaster API key first (below the search box).");
-    }
+    const key = TM_KEY;
     const p = new URLSearchParams({
       apikey: key,
       classificationName: "music",
@@ -164,7 +142,7 @@
       ...locParams
     });
     const res = await fetch(`https://app.ticketmaster.com/discovery/v2/events.json?${p}`);
-    if (res.status === 401) throw new Error("Ticketmaster rejected the API key. Check it and try again.");
+    if (res.status === 401) throw new Error("Show listings are unavailable right now. Please try again later.");
     if (res.status === 429) throw new Error("Ticketmaster rate limit hit. Wait a minute and try again.");
     if (!res.ok) throw new Error(`Ticketmaster error (${res.status}).`);
     const data = await res.json();
