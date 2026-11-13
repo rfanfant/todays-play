@@ -69,7 +69,7 @@
     <button id="nearMe" style="width:100%">📍 Who's playing near me</button>
     <div class="or">or search a place</div>
     <form id="searchForm" class="row">
-      <input id="place" placeholder="City or ZIP (e.g. Seattle or 98052)" autocomplete="off">
+      <input id="place" placeholder="City, state or ZIP (e.g. Davis, CA)" autocomplete="off">
       <select id="radius" aria-label="Radius">
         <option value="10">10 mi</option>
         <option value="25" selected>25 mi</option>
@@ -339,13 +339,49 @@
     store.set("lastPlace", place);
     const radius = $("radius").value;
     if (/^\d{5}$/.test(place)) searchZip(place, radius);
-    else {
-      const [city, state] = place.split(",").map(s => s.trim());
+    else searchCity(place, radius);
+  });
+
+  // Ticketmaster's city filter only matches venues in that exact city, so geocode the
+  // city (Open-Meteo, free, no key) and do a radius search around it.
+  const STATES = { AL:"Alabama",AK:"Alaska",AZ:"Arizona",AR:"Arkansas",CA:"California",CO:"Colorado",CT:"Connecticut",
+    DE:"Delaware",DC:"District of Columbia",FL:"Florida",GA:"Georgia",HI:"Hawaii",ID:"Idaho",IL:"Illinois",IN:"Indiana",
+    IA:"Iowa",KS:"Kansas",KY:"Kentucky",LA:"Louisiana",ME:"Maine",MD:"Maryland",MA:"Massachusetts",MI:"Michigan",
+    MN:"Minnesota",MS:"Mississippi",MO:"Missouri",MT:"Montana",NE:"Nebraska",NV:"Nevada",NH:"New Hampshire",
+    NJ:"New Jersey",NM:"New Mexico",NY:"New York",NC:"North Carolina",ND:"North Dakota",OH:"Ohio",OK:"Oklahoma",
+    OR:"Oregon",PA:"Pennsylvania",RI:"Rhode Island",SC:"South Carolina",SD:"South Dakota",TN:"Tennessee",TX:"Texas",
+    UT:"Utah",VT:"Vermont",VA:"Virginia",WA:"Washington",WV:"West Virginia",WI:"Wisconsin",WY:"Wyoming" };
+
+  async function searchCity(place, radius) {
+    setStatus("Looking up today's shows…");
+    const [city, stateRaw] = place.split(",").map(s => s.trim());
+    let state = (stateRaw || "").toLowerCase();
+    if (STATES[state.toUpperCase()]) state = STATES[state.toUpperCase()].toLowerCase();
+    let geo = null;
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 6000);
+      const q = new URLSearchParams({ name: city, count: "20", language: "en", format: "json", countryCode: "US" });
+      const res = await fetch(`https://geocoding-api.open-meteo.com/v1/search?${q}`, { signal: ctrl.signal });
+      clearTimeout(t);
+      if (res.ok) {
+        let hits = ((await res.json()).results || []).filter(r => r.country_code === "US");
+        if (state) hits = hits.filter(r => (r.admin1 || "").toLowerCase() === state);
+        // No state given: take the biggest place with that name (Davis -> Davis, CA).
+        hits.sort((a, b) => (b.population || 0) - (a.population || 0));
+        const h = hits[0];
+        if (h) geo = { lat: h.latitude, lon: h.longitude, name: `${h.name}${h.admin1 ? ", " + h.admin1 : ""}` };
+      }
+    } catch {}
+    if (geo && isFinite(geo.lat) && isFinite(geo.lon)) {
+      run({ geoPoint: geohash(geo.lat, geo.lon), radius, unit: "miles" }, `within ${radius} mi of ${geo.name}`);
+    } else {
+      // Fallback: exact-city match only.
       const p = { city };
-      if (state && /^[A-Za-z]{2}$/.test(state)) p.stateCode = state.toUpperCase();
+      if (stateRaw && /^[A-Za-z]{2}$/.test(stateRaw)) p.stateCode = stateRaw.toUpperCase();
       run(p, `in ${city}`);
     }
-  });
+  }
 
   $("nearMe").addEventListener("click", () => {
     if (!navigator.geolocation) { setStatus("Location isn't available in this browser. Search a city instead.", true); return; }
