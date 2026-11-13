@@ -285,7 +285,7 @@
   function render(acts, where) {
     resultsEl.innerHTML = "";
     if (!acts.length) {
-      setStatus(`No music listed on Ticketmaster for ${where} today. Try a bigger radius or a nearby city.`);
+      setStatus(`No music listed on Ticketmaster ${where} today. Try a bigger radius or a nearby city.`);
       return;
     }
     setStatus(`${acts.length} act${acts.length === 1 ? "" : "s"} playing ${where} today. Tap ▶ for a sample.`);
@@ -330,6 +330,29 @@
     }
   }
 
+  // Ticketmaster's postalCode filter only matches venues inside that exact ZIP,
+  // so turn the ZIP into coordinates and do a radius search around it.
+  async function searchZip(zip, radius) {
+    setStatus("Looking up today's shows…");
+    let geo = null;
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 6000);
+      const res = await fetch(`https://api.zippopotam.us/us/${zip}`, { signal: ctrl.signal });
+      clearTimeout(t);
+      if (res.ok) {
+        const pl = (await res.json()).places?.[0];
+        if (pl) geo = { lat: parseFloat(pl.latitude), lon: parseFloat(pl.longitude), name: pl["place name"] };
+      }
+    } catch {}
+    if (geo && isFinite(geo.lat) && isFinite(geo.lon)) {
+      run({ geoPoint: geohash(geo.lat, geo.lon), radius, unit: "miles" }, `within ${radius} mi of ${geo.name || zip}`);
+    } else {
+      // Fallback: exact-ZIP match only.
+      run({ postalCode: zip }, `in ZIP ${zip}`);
+    }
+  }
+
   // ---------- inputs ----------
   $("searchForm").addEventListener("submit", (e) => {
     e.preventDefault();
@@ -337,7 +360,7 @@
     if (!place) { setStatus("Type a city or ZIP code.", true); return; }
     store.set("lastPlace", place);
     const radius = $("radius").value;
-    if (/^\d{5}$/.test(place)) run({ postalCode: place, radius, unit: "miles" }, `near ${place}`);
+    if (/^\d{5}$/.test(place)) searchZip(place, radius);
     else {
       const [city, state] = place.split(",").map(s => s.trim());
       const p = { city };
