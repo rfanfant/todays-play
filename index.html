@@ -70,6 +70,8 @@
   .controls { display: grid; gap: 8px; justify-items: center; }
   .play.skip { width: 40px; height: 40px; font-size: .95rem; background: #2a2a33; color: var(--text); }
   .play[hidden] { display: none; }
+  .play:disabled { background: #2a2a33; color: #5a5a66; opacity: 1; }
+  .act.silent .who { cursor: default; }
   .bar { height: 3px; background: var(--line); border-radius: 2px; margin-top: 6px; overflow: hidden; }
   .bar i { display: block; height: 100%; width: 0; background: var(--ok); }
   footer { color: var(--muted); font-size: .8rem; margin-top: 32px; }
@@ -331,7 +333,7 @@
       const lines = [...card.querySelectorAll(".who")];
       if (lines.every(l => l.dataset.state === "none")) {
         const btn = card.querySelector(".play:not(.skip)");
-        btn.disabled = true; btn.title = "No samples available for this show";
+        btn.disabled = true; btn.title = "No samples available for this show"; card.classList.add("silent");
       }
     });
   }
@@ -450,7 +452,7 @@
         role.textContent = show.acts.length === 1 ? "" : (i === 0 ? "headliner" : "warm-up");
         const trk = document.createElement("span"); trk.className = "trk";
         line.append(role, trk);
-        line.addEventListener("click", () => startShow(card, btn, skip, show.acts, lines, i));
+        line.addEventListener("click", () => { if (!btn.disabled) startShow(card, btn, skip, show.acts, lines, i); });
         lineup.appendChild(line);
         return line;
       });
