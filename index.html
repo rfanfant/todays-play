@@ -52,6 +52,12 @@
   .act .meta a { color: var(--muted); }
   .act .track { font-size: .8rem; color: var(--ok); margin-top: 2px; }
   .act .track.none { color: var(--muted); }
+  .lineup { margin-top: 6px; display: grid; gap: 2px; }
+  .lineup .who { font-size: .9rem; cursor: pointer; padding: 2px 0; }
+  .lineup .who .role { color: var(--muted); font-size: .75rem; margin-left: 6px; }
+  .lineup .who.on { color: var(--ok); }
+  .lineup .who .trk { display: block; font-size: .78rem; color: var(--ok); }
+  .lineup .who .trk.none { color: var(--muted); }
   .play {
     width: 48px; height: 48px; border-radius: 50%; padding: 0; font-size: 1.1rem;
     display: grid; place-items: center;
@@ -174,28 +180,29 @@
   }
 
   // One row per artist; headliners first, openers after, deduped across events.
-  function toActs(events) {
-    const acts = new Map();
+  // One card per show: headliner first, then the warm-up acts, in Ticketmaster's billing order.
+  function toShows(events) {
+    const shows = new Map();
     for (const ev of events) {
       const venue = ev._embedded?.venues?.[0];
       const attractions = ev._embedded?.attractions || [];
-      const names = attractions.length ? attractions.map(a => ({ name: a.name, img: pickImage(a.images) }))
-                                       : [{ name: ev.name, img: null }];
-      names.forEach((a, i) => {
-        const k = norm(a.name);
-        if (!k || acts.has(k)) return;
-        acts.set(k, {
-          name: a.name,
-          opener: i > 0,
-          image: a.img || pickImage(ev.images),
-          venue: venue?.name || "",
-          city: venue?.city?.name || "",
-          time: ev.dates?.start?.localTime || "",
-          url: ev.url || ""
-        });
+      const acts = (attractions.length ? attractions.map(a => ({ name: a.name, img: pickImage(a.images) }))
+                                       : [{ name: ev.name, img: null }]).filter(a => norm(a.name));
+      if (!acts.length) continue;
+      const time = ev.dates?.start?.localTime || "";
+      // Ticketmaster often lists the same show more than once (VIP packages, parking, etc.).
+      const key = [acts.map(a => norm(a.name)).join("|"), norm(venue?.name), time].join("#");
+      if (shows.has(key)) continue;
+      shows.set(key, {
+        acts,
+        image: acts[0].img || pickImage(ev.images),
+        venue: venue?.name || "",
+        city: venue?.city?.name || "",
+        time,
+        url: ev.url || ""
       });
     }
-    return [...acts.values()].sort((a, b) => (a.opener - b.opener));
+    return [...shows.values()].sort((a, b) => (a.time || "99").localeCompare(b.time || "99"));
   }
 
   function pickImage(imgs) {
@@ -244,79 +251,108 @@
     return out;
   }
 
-  // ---------- playback ----------
-  let currentBtn = null;
+  // ---------- playback: each show's lineup is a playlist ----------
+  // { card, btn, acts, lines, idx, token }
+  let now_ = null;
+  let tokenSeq = 0;
+
   function stopCurrent() {
     player.pause();
-    if (currentBtn) {
-      currentBtn.textContent = "▶"; currentBtn.classList.remove("playing");
-      const bar = currentBtn.closest(".act").querySelector(".bar i"); if (bar) bar.style.width = "0";
+    if (now_) {
+      now_.btn.textContent = "▶"; now_.btn.classList.remove("playing");
+      now_.lines.forEach(l => l.classList.remove("on"));
+      const bar = now_.card.querySelector(".bar i"); if (bar) bar.style.width = "0";
     }
-    currentBtn = null;
+    now_ = null;
   }
   player.addEventListener("timeupdate", () => {
-    if (!currentBtn || !player.duration) return;
-    const bar = currentBtn.closest(".act").querySelector(".bar i");
+    if (!now_ || !player.duration) return;
+    const bar = now_.card.querySelector(".bar i");
     if (bar) bar.style.width = `${(player.currentTime / player.duration) * 100}%`;
   });
-  player.addEventListener("ended", stopCurrent);
+  player.addEventListener("ended", () => { if (now_) playIndex(now_.idx + 1); });
 
-  async function onPlay(btn, act, trackEl) {
-    if (currentBtn === btn) { stopCurrent(); return; }
+  function startShow(card, btn, acts, lines, startAt = 0) {
     stopCurrent();
-    btn.disabled = true; btn.textContent = "…";
-    try {
-      const pv = await findPreview(act.name);
-      if (!pv) {
-        trackEl.textContent = "No sample found"; trackEl.classList.add("none");
-        btn.textContent = "–"; return;
-      }
-      trackEl.textContent = `♪ ${pv.title}`;
-      player.src = pv.url;
-      await player.play();
-      currentBtn = btn; btn.textContent = "❚❚"; btn.classList.add("playing");
-    } catch (e) {
-      trackEl.textContent = "Couldn't load a sample"; trackEl.classList.add("none");
-      btn.textContent = "▶";
-    } finally {
-      btn.disabled = false;
+    now_ = { card, btn, acts, lines, idx: -1, token: 0 };
+    btn.textContent = "❚❚"; btn.classList.add("playing");
+    playIndex(startAt);
+  }
+
+  async function playIndex(i) {
+    const st = now_;
+    if (!st) return;
+    if (i >= st.acts.length) { stopCurrent(); return; }
+    const token = ++tokenSeq;
+    st.idx = i; st.token = token;
+    st.lines.forEach((l, j) => l.classList.toggle("on", j === i));
+    const trk = st.lines[i].querySelector(".trk");
+    trk.className = "trk"; trk.textContent = "Finding a sample…";
+    let pv = null;
+    try { pv = await findPreview(st.acts[i].name); } catch {}
+    if (now_ !== st || st.token !== token) return; // user moved on
+    if (!pv) {
+      trk.textContent = "No sample found"; trk.classList.add("none");
+      playIndex(i + 1);
+      return;
     }
+    trk.textContent = `♪ ${pv.title}`;
+    player.src = pv.url;
+    try { await player.play(); }
+    catch { trk.textContent = "Couldn't play the sample"; trk.classList.add("none"); playIndex(i + 1); }
   }
 
   // ---------- render ----------
-  function render(acts, where) {
+  function render(shows, where) {
     resultsEl.innerHTML = "";
-    if (!acts.length) {
+    if (!shows.length) {
       setStatus(`No music listed on Ticketmaster ${where} ${whenText()}. Try a bigger radius or a nearby city.`);
       return;
     }
-    setStatus(`${acts.length} act${acts.length === 1 ? "" : "s"} playing ${where} ${whenText()}. Tap ▶ for a sample.`);
-    for (const act of acts) {
-      const row = document.createElement("div");
-      row.className = "act";
+    setStatus(`${shows.length} show${shows.length === 1 ? "" : "s"} ${where} ${whenText()}. Tap ▶ to hear the whole lineup, or tap a band.`);
+    for (const show of shows) {
+      const card = document.createElement("div");
+      card.className = "act";
 
-      const img = document.createElement(act.image ? "img" : "div");
-      if (act.image) { img.src = act.image; img.alt = ""; img.loading = "lazy"; } else img.className = "ph";
+      const img = document.createElement(show.image ? "img" : "div");
+      if (show.image) { img.src = show.image; img.alt = ""; img.loading = "lazy"; } else img.className = "ph";
 
       const info = document.createElement("div");
-      const name = document.createElement("div"); name.className = "name";
-      name.textContent = act.name + (act.opener ? " (opener)" : "");
+      const name = document.createElement("div"); name.className = "name"; name.textContent = show.acts[0].name;
       const meta = document.createElement("div"); meta.className = "meta";
-      const bits = [act.venue, act.city, fmtTime(act.time)].filter(Boolean).join(" · ");
-      if (act.url) {
-        const a = document.createElement("a"); a.href = act.url; a.target = "_blank"; a.rel = "noopener";
+      const bits = [show.venue, show.city, fmtTime(show.time)].filter(Boolean).join(" · ");
+      if (show.url) {
+        const a = document.createElement("a"); a.href = show.url; a.target = "_blank"; a.rel = "noopener";
         a.textContent = bits || "Tickets"; meta.appendChild(a);
       } else meta.textContent = bits;
-      const track = document.createElement("div"); track.className = "track";
-      const bar = document.createElement("div"); bar.className = "bar"; bar.appendChild(document.createElement("i"));
-      info.append(name, meta, track, bar);
 
+      const lineup = document.createElement("div"); lineup.className = "lineup";
       const btn = document.createElement("button");
-      btn.className = "play"; btn.textContent = "▶"; btn.setAttribute("aria-label", `Play a sample of ${act.name}`);
-      btn.addEventListener("click", () => onPlay(btn, act, track));
+      const lines = show.acts.map((act, i) => {
+        const line = document.createElement("div"); line.className = "who";
+        line.setAttribute("role", "button");
+        line.setAttribute("aria-label", `Play ${act.name}`);
+        line.append(document.createTextNode(act.name));
+        const role = document.createElement("span"); role.className = "role";
+        role.textContent = show.acts.length === 1 ? "" : (i === 0 ? "headliner" : "warm-up");
+        const trk = document.createElement("span"); trk.className = "trk";
+        line.append(role, trk);
+        line.addEventListener("click", () => startShow(card, btn, show.acts, lines, i));
+        lineup.appendChild(line);
+        return line;
+      });
+      const bar = document.createElement("div"); bar.className = "bar"; bar.appendChild(document.createElement("i"));
+      info.append(name, meta, lineup, bar);
 
-      row.append(img, info, btn);
-      resultsEl.appendChild(row);
+      btn.className = "play"; btn.textContent = "▶";
+      btn.setAttribute("aria-label", `Play the lineup for ${show.acts[0].name}`);
+      btn.addEventListener("click", () => {
+        if (now_ && now_.btn === btn) stopCurrent();
+        else startShow(card, btn, show.acts, lines, 0);
+      });
+
+      card.append(img, info, btn);
+      resultsEl.appendChild(card);
     }
   }
 
@@ -327,7 +363,7 @@
     setStatus("Looking up shows…");
     try {
       const events = await fetchShows(locParams);
-      render(toActs(events), where);
+      render(toShows(events), where);
     } catch (e) {
       setStatus(e.message || "Something went wrong.", true);
     }
