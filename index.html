@@ -63,6 +63,9 @@
     display: grid; place-items: center;
   }
   .play.playing { background: var(--ok); }
+  .controls { display: grid; gap: 8px; justify-items: center; }
+  .play.skip { width: 40px; height: 40px; font-size: .95rem; background: #2a2a33; color: var(--text); }
+  .play[hidden] { display: none; }
   .bar { height: 3px; background: var(--line); border-radius: 2px; margin-top: 6px; overflow: hidden; }
   .bar i { display: block; height: 100%; width: 0; background: var(--ok); }
   footer { color: var(--muted); font-size: .8rem; margin-top: 32px; }
@@ -98,7 +101,7 @@
   <div id="results" class="list"></div>
 
   <footer>
-    Shows from the Ticketmaster Discovery API. 30-second samples from the iTunes Search API.
+    Shows from the Ticketmaster Discovery API. 30-second samples from Deezer and iTunes.
   </footer>
 </div>
 
@@ -221,11 +224,11 @@
     return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
   }
 
-  // ---------- iTunes previews (JSONP: works without CORS) ----------
+  // ---------- song samples (JSONP: works without CORS) ----------
   let jsonpId = 0;
   function jsonp(url) {
     return new Promise((resolve, reject) => {
-      const cb = `__itunes_cb_${++jsonpId}`;
+      const cb = `__jsonp_cb_${++jsonpId}`;
       const s = document.createElement("script");
       const timer = setTimeout(() => { cleanup(); reject(new Error("timeout")); }, 10000);
       function cleanup() { clearTimeout(timer); delete window[cb]; s.remove(); }
@@ -236,29 +239,57 @@
     });
   }
 
-  const previewCache = new Map();
-  async function findPreview(artist) {
+  const TOP_N = 5;
+
+  // Deezer: the artist's real top tracks, ranked by popularity.
+  async function deezerTop(artist) {
     const k = norm(artist);
-    if (previewCache.has(k)) return previewCache.get(k);
-    const q = new URLSearchParams({ term: artist, entity: "song", attribute: "artistTerm", limit: "10", country: "US" });
-    const data = await jsonp(`https://itunes.apple.com/search?${q}`);
-    const results = (data.results || []).filter(r => r.previewUrl);
+    const q = new URLSearchParams({ q: artist, limit: "10", output: "jsonp" });
+    const found = await jsonp(`https://api.deezer.com/search/artist?${q}`);
     // Only accept an exact artist-name match, so we never play the wrong band.
-    const hit = results.find(r => norm(r.artistName) === k) || null;
-    const out = hit ? { url: hit.previewUrl, title: hit.trackName, link: hit.trackViewUrl } : null;
-    previewCache.set(k, out);
-    return out;
+    const matches = (found.data || []).filter(a => norm(a.name) === k)
+                                      .sort((a, b) => (b.nb_fan || 0) - (a.nb_fan || 0));
+    if (!matches.length) return [];
+    const top = await jsonp(`https://api.deezer.com/artist/${matches[0].id}/top?limit=10&output=jsonp`);
+    return (top.data || []).filter(t => t.preview)
+                           .map(t => ({ url: t.preview, title: t.title_short || t.title }));
+  }
+
+  // iTunes fallback for bands Deezer doesn't have (search order, not a true top list).
+  async function itunesTracks(artist) {
+    const k = norm(artist);
+    const q = new URLSearchParams({ term: artist, entity: "song", attribute: "artistTerm", limit: "25", country: "US" });
+    const data = await jsonp(`https://itunes.apple.com/search?${q}`);
+    return (data.results || []).filter(r => r.previewUrl && norm(r.artistName) === k)
+                               .map(r => ({ url: r.previewUrl, title: r.trackName }));
+  }
+
+  const tracksCache = new Map();
+  async function findTracks(artist) {
+    const k = norm(artist);
+    if (tracksCache.has(k)) return tracksCache.get(k);
+    let list = [];
+    try { list = await deezerTop(artist); } catch {}
+    if (!list.length) { try { list = await itunesTracks(artist); } catch {} }
+    // Drop repeats of the same song (live versions, remasters listed twice, etc.).
+    const seen = new Set();
+    list = list.filter(t => { const n = norm(t.title.replace(/\s*[\(\[].*$/, "")); if (seen.has(n)) return false; seen.add(n); return true; })
+               .slice(0, TOP_N);
+    tracksCache.set(k, list);
+    return list;
   }
 
   // ---------- playback: each show's lineup is a playlist ----------
-  // { card, btn, acts, lines, idx, token }
+  // now_ = { card, btn, skip, acts, lines, band, track, tracks, token }
   let now_ = null;
   let tokenSeq = 0;
 
   function stopCurrent() {
+    ++tokenSeq;
     player.pause();
     if (now_) {
       now_.btn.textContent = "▶"; now_.btn.classList.remove("playing");
+      now_.skip.hidden = true;
       now_.lines.forEach(l => l.classList.remove("on"));
       const bar = now_.card.querySelector(".bar i"); if (bar) bar.style.width = "0";
     }
@@ -269,36 +300,59 @@
     const bar = now_.card.querySelector(".bar i");
     if (bar) bar.style.width = `${(player.currentTime / player.duration) * 100}%`;
   });
-  player.addEventListener("ended", () => { if (now_) playIndex(now_.idx + 1); });
+  player.addEventListener("ended", () => { if (now_) nextTrack(); });
 
-  function startShow(card, btn, acts, lines, startAt = 0) {
+  function startShow(card, btn, skip, acts, lines, startBand = 0) {
     stopCurrent();
-    now_ = { card, btn, acts, lines, idx: -1, token: 0 };
+    now_ = { card, btn, skip, acts, lines, band: -1, track: 0, tracks: [], token: 0 };
     btn.textContent = "❚❚"; btn.classList.add("playing");
-    playIndex(startAt);
+    skip.hidden = false;
+    playBand(startBand);
   }
 
-  async function playIndex(i) {
+  function nextTrack() {
+    if (!now_) return;
+    if (now_.track + 1 < now_.tracks.length) playTrack(now_.track + 1);
+    else playBand(now_.band + 1);
+  }
+
+  async function playBand(i) {
     const st = now_;
     if (!st) return;
     if (i >= st.acts.length) { stopCurrent(); return; }
     const token = ++tokenSeq;
-    st.idx = i; st.token = token;
+    st.band = i; st.token = token; st.tracks = []; st.track = 0;
     st.lines.forEach((l, j) => l.classList.toggle("on", j === i));
     const trk = st.lines[i].querySelector(".trk");
-    trk.className = "trk"; trk.textContent = "Finding a sample…";
-    let pv = null;
-    try { pv = await findPreview(st.acts[i].name); } catch {}
+    trk.className = "trk"; trk.textContent = "Finding songs…";
+    let list = [];
+    try { list = await findTracks(st.acts[i].name); } catch {}
     if (now_ !== st || st.token !== token) return; // user moved on
-    if (!pv) {
-      trk.textContent = "No sample found"; trk.classList.add("none");
-      playIndex(i + 1);
+    if (!list.length) {
+      trk.textContent = "No samples found"; trk.classList.add("none");
+      playBand(i + 1);
       return;
     }
-    trk.textContent = `♪ ${pv.title}`;
-    player.src = pv.url;
+    st.tracks = list;
+    playTrack(0);
+  }
+
+  async function playTrack(t) {
+    const st = now_;
+    if (!st) return;
+    const token = ++tokenSeq;
+    st.track = t; st.token = token;
+    const song = st.tracks[t];
+    const trk = st.lines[st.band].querySelector(".trk");
+    trk.className = "trk";
+    trk.textContent = `♪ ${song.title} (${t + 1} of ${st.tracks.length})`;
+    const bar = st.card.querySelector(".bar i"); if (bar) bar.style.width = "0";
+    player.src = song.url;
     try { await player.play(); }
-    catch { trk.textContent = "Couldn't play the sample"; trk.classList.add("none"); playIndex(i + 1); }
+    catch {
+      if (now_ !== st || st.token !== token) return;
+      nextTrack(); // a dead preview link: move on
+    }
   }
 
   // ---------- render ----------
@@ -308,7 +362,7 @@
       setStatus(`No music listed on Ticketmaster ${where} ${whenText()}. Try a bigger radius or a nearby city.`);
       return;
     }
-    setStatus(`${shows.length} show${shows.length === 1 ? "" : "s"} ${where} ${whenText()}. Tap ▶ to hear the whole lineup, or tap a band.`);
+    setStatus(`${shows.length} show${shows.length === 1 ? "" : "s"} ${where} ${whenText()}. Tap ▶ to hear each band's top songs, or tap a band.`);
     for (const show of shows) {
       const card = document.createElement("div");
       card.className = "act";
@@ -327,6 +381,7 @@
 
       const lineup = document.createElement("div"); lineup.className = "lineup";
       const btn = document.createElement("button");
+      const skip = document.createElement("button");
       const lines = show.acts.map((act, i) => {
         const line = document.createElement("div"); line.className = "who";
         line.setAttribute("role", "button");
@@ -336,7 +391,7 @@
         role.textContent = show.acts.length === 1 ? "" : (i === 0 ? "headliner" : "warm-up");
         const trk = document.createElement("span"); trk.className = "trk";
         line.append(role, trk);
-        line.addEventListener("click", () => startShow(card, btn, show.acts, lines, i));
+        line.addEventListener("click", () => startShow(card, btn, skip, show.acts, lines, i));
         lineup.appendChild(line);
         return line;
       });
@@ -347,10 +402,16 @@
       btn.setAttribute("aria-label", `Play the lineup for ${show.acts[0].name}`);
       btn.addEventListener("click", () => {
         if (now_ && now_.btn === btn) stopCurrent();
-        else startShow(card, btn, show.acts, lines, 0);
+        else startShow(card, btn, skip, show.acts, lines, 0);
       });
 
-      card.append(img, info, btn);
+      skip.className = "play skip"; skip.textContent = "⏭"; skip.hidden = true;
+      skip.setAttribute("aria-label", "Skip to the next song");
+      skip.addEventListener("click", () => { if (now_ && now_.skip === skip) nextTrack(); });
+
+      const controls = document.createElement("div"); controls.className = "controls";
+      controls.append(btn, skip);
+      card.append(img, info, controls);
       resultsEl.appendChild(card);
     }
   }
