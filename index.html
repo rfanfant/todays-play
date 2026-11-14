@@ -57,7 +57,9 @@
   .act .track { font-size: .8rem; color: var(--ok); margin-top: 2px; }
   .act .track.none { color: var(--muted); }
   .lineup { margin-top: 6px; display: grid; gap: 2px; }
-  .lineup .who { font-size: .9rem; cursor: pointer; padding: 2px 0; }
+  .lineup .who { font-size: .9rem; padding: 2px 0; }
+  a.tix { color: inherit; text-decoration: underline; text-decoration-color: #55556a; text-underline-offset: 3px; }
+  .lineup .who.on a.tix { color: var(--ok); }
   .lineup .who .role { color: var(--muted); font-size: .75rem; margin-left: 6px; }
   .lineup .who.on { color: var(--ok); }
   .lineup .who .trk { display: block; font-size: .78rem; color: var(--ok); }
@@ -71,7 +73,6 @@
   .play.skip { width: 40px; height: 40px; font-size: .95rem; background: #2a2a33; color: var(--text); }
   .play[hidden] { display: none; }
   .play:disabled { background: #2a2a33; color: #5a5a66; opacity: 1; }
-  .act.silent .who { cursor: default; }
   .bar { height: 3px; background: var(--line); border-radius: 2px; margin-top: 6px; overflow: hidden; }
   .bar i { display: block; height: 100%; width: 0; background: var(--ok); }
   footer { color: var(--muted); font-size: .8rem; margin-top: 32px; }
@@ -422,7 +423,7 @@
       setStatus(`No music listed on Ticketmaster ${where} ${whenText()}. Try a bigger radius or a nearby city.`);
       return;
     }
-    setStatus(`${shows.length} show${shows.length === 1 ? "" : "s"} ${where} ${whenText()}. Tap ▶ to hear each band's top songs, or tap a band.`);
+    setStatus(`${shows.length} show${shows.length === 1 ? "" : "s"} ${where} ${whenText()}. Tap ▶ to hear each band's top songs, or a band's name for tickets.`);
     for (const show of shows) {
       const card = document.createElement("div");
       card.className = "act";
@@ -431,13 +432,18 @@
       if (show.image) { img.src = show.image; img.alt = ""; img.loading = "lazy"; } else img.className = "ph";
 
       const info = document.createElement("div");
-      const name = document.createElement("div"); name.className = "name"; name.textContent = show.acts[0].name;
+      // Band names link to the show's Ticketmaster page.
+      const ticketLink = (text) => {
+        if (!show.url) return document.createTextNode(text);
+        const a = document.createElement("a");
+        a.href = show.url; a.target = "_blank"; a.rel = "noopener"; a.className = "tix";
+        a.textContent = text; a.title = `Tickets for ${show.acts[0].name}`;
+        return a;
+      };
+      const name = document.createElement("div"); name.className = "name";
+      name.appendChild(ticketLink(show.acts[0].name));
       const meta = document.createElement("div"); meta.className = "meta";
-      const bits = [show.venue, show.city, fmtTime(show.time)].filter(Boolean).join(" · ");
-      if (show.url) {
-        const a = document.createElement("a"); a.href = show.url; a.target = "_blank"; a.rel = "noopener";
-        a.textContent = bits || "Tickets"; meta.appendChild(a);
-      } else meta.textContent = bits;
+      meta.textContent = [show.venue, show.city, fmtTime(show.time)].filter(Boolean).join(" · ");
 
       const lineup = document.createElement("div"); lineup.className = "lineup";
       const btn = document.createElement("button");
@@ -445,14 +451,11 @@
       const lines = show.acts.map((act, i) => {
         const line = document.createElement("div"); line.className = "who";
         line.dataset.band = norm(act.name);
-        line.setAttribute("role", "button");
-        line.setAttribute("aria-label", `Play ${act.name}`);
-        line.append(document.createTextNode(act.name));
+        line.append(ticketLink(act.name));
         const role = document.createElement("span"); role.className = "role";
         role.textContent = show.acts.length === 1 ? "" : (i === 0 ? "headliner" : "warm-up");
         const trk = document.createElement("span"); trk.className = "trk";
         line.append(role, trk);
-        line.addEventListener("click", () => { if (!btn.disabled) startShow(card, btn, skip, show.acts, lines, i); });
         lineup.appendChild(line);
         return line;
       });
