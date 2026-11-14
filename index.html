@@ -264,19 +264,72 @@
                                .map(r => ({ url: r.previewUrl, title: r.trackName }));
   }
 
+  // Try a lookup twice before giving up: a slow or dropped request shouldn't mean "no music".
+  async function tryTwice(fn) {
+    try { return { list: await fn(), ok: true }; } catch {}
+    await new Promise(r => setTimeout(r, 800));
+    try { return { list: await fn(), ok: true }; } catch { return { list: [], ok: false }; }
+  }
+
+  // One shared lookup per band (so the background loader and the play button never duplicate work).
   const tracksCache = new Map();
-  async function findTracks(artist) {
+  function findTracks(artist) {
     const k = norm(artist);
     if (tracksCache.has(k)) return tracksCache.get(k);
-    let list = [];
-    try { list = await deezerTop(artist); } catch {}
-    if (!list.length) { try { list = await itunesTracks(artist); } catch {} }
-    // Drop repeats of the same song (live versions, remasters listed twice, etc.).
+    const p = (async () => {
+      let r = await tryTwice(() => deezerTop(artist));
+      let list = r.list, ok = r.ok;
+      if (!list.length) { const r2 = await tryTwice(() => itunesTracks(artist)); list = r2.list; ok = ok || r2.ok; }
+      // Drop repeats of the same song (live versions, remasters listed twice, etc.).
+      const seen = new Set();
+      list = list.filter(t => { const n = norm(t.title.replace(/\s*[\(\[].*$/, "")); if (seen.has(n)) return false; seen.add(n); return true; })
+                 .slice(0, TOP_N);
+      // Network trouble on both services: don't remember the empty answer, so the next try looks again.
+      if (!list.length && !ok) tracksCache.delete(k);
+      return list;
+    })();
+    tracksCache.set(k, p);
+    return p;
+  }
+
+  // ---------- background loader: fetch every band's songs as soon as results appear ----------
+  let prefetchGen = 0;
+  function prefetch(shows) {
+    const gen = ++prefetchGen;
+    const names = [];
     const seen = new Set();
-    list = list.filter(t => { const n = norm(t.title.replace(/\s*[\(\[].*$/, "")); if (seen.has(n)) return false; seen.add(n); return true; })
-               .slice(0, TOP_N);
-    tracksCache.set(k, list);
-    return list;
+    for (const show of shows) for (const a of show.acts) {
+      const k = norm(a.name);
+      if (!seen.has(k)) { seen.add(k); names.push(a.name); }
+    }
+    let next = 0;
+    async function worker() {
+      while (gen === prefetchGen && next < names.length) {
+        const name = names[next++];
+        const list = await findTracks(name);
+        if (gen !== prefetchGen) return;
+        markBand(name, list);
+      }
+    }
+    // A few at a time keeps well under Deezer's rate limit.
+    for (let i = 0; i < 3; i++) worker();
+  }
+
+  // Show which bands have no samples, and disable ▶ on shows with nothing to play.
+  function markBand(name, list) {
+    const k = norm(name);
+    resultsEl.querySelectorAll(".who").forEach(line => {
+      if (line.dataset.band !== k) return;
+      line.dataset.state = list.length ? "ready" : "none";
+      const trk = line.querySelector(".trk");
+      if (!list.length && !line.classList.contains("on")) { trk.className = "trk none"; trk.textContent = "No samples available"; }
+      const card = line.closest(".act");
+      const lines = [...card.querySelectorAll(".who")];
+      if (lines.every(l => l.dataset.state === "none")) {
+        const btn = card.querySelector(".play:not(.skip)");
+        btn.disabled = true; btn.title = "No samples available for this show";
+      }
+    });
   }
 
   // ---------- playback: each show's lineup is a playlist ----------
@@ -327,6 +380,7 @@
     trk.className = "trk"; trk.textContent = "Finding songs…";
     let list = [];
     try { list = await findTracks(st.acts[i].name); } catch {}
+    markBand(st.acts[i].name, list);
     if (now_ !== st || st.token !== token) return; // user moved on
     if (!list.length) {
       trk.textContent = "No samples found"; trk.classList.add("none");
@@ -384,6 +438,7 @@
       const skip = document.createElement("button");
       const lines = show.acts.map((act, i) => {
         const line = document.createElement("div"); line.className = "who";
+        line.dataset.band = norm(act.name);
         line.setAttribute("role", "button");
         line.setAttribute("aria-label", `Play ${act.name}`);
         line.append(document.createTextNode(act.name));
@@ -414,6 +469,7 @@
       card.append(img, info, controls);
       resultsEl.appendChild(card);
     }
+    prefetch(shows);
   }
 
   async function run(locParams, where) {
