@@ -58,6 +58,11 @@
   .act .track.none { color: var(--muted); }
   .lineup { margin-top: 6px; display: grid; gap: 2px; }
   .lineup .who { font-size: .9rem; padding: 2px 0; }
+  .mini { width: 30px; height: 30px; padding: 0; margin-right: 8px; border-radius: 50%; font-size: .7rem;
+          background: #2a2a33; color: var(--text); vertical-align: middle; }
+  .who.on .mini { background: var(--ok); color: #fff; }
+  .mini:disabled { color: #5a5a66; opacity: 1; }
+  .lineup.multi .who .trk { margin-left: 38px; }
   a.tix { color: inherit; text-decoration: underline; text-decoration-color: #55556a; text-underline-offset: 3px; }
   .lineup .who.on a.tix { color: var(--ok); }
   .lineup .who .role { color: var(--muted); font-size: .75rem; margin-left: 6px; }
@@ -328,6 +333,7 @@
     resultsEl.querySelectorAll(".who").forEach(line => {
       if (line.dataset.band !== k) return;
       line.dataset.state = list.length ? "ready" : "none";
+      const mini = line.querySelector(".mini"); if (mini) mini.disabled = !list.length;
       const trk = line.querySelector(".trk");
       if (!list.length && !line.classList.contains("on")) { trk.className = "trk none"; trk.textContent = "No samples available"; }
       const card = line.closest(".act");
@@ -350,7 +356,7 @@
     if (now_) {
       now_.btn.textContent = "▶"; now_.btn.classList.remove("playing");
       now_.skip.hidden = true;
-      now_.lines.forEach(l => l.classList.remove("on"));
+      now_.lines.forEach(l => { l.classList.remove("on"); const m = l.querySelector(".mini"); if (m) m.textContent = "▶"; });
       const bar = now_.card.querySelector(".bar i"); if (bar) bar.style.width = "0";
     }
     now_ = null;
@@ -382,7 +388,10 @@
     if (i >= st.acts.length) { stopCurrent(); return; }
     const token = ++tokenSeq;
     st.band = i; st.token = token; st.tracks = []; st.track = 0;
-    st.lines.forEach((l, j) => l.classList.toggle("on", j === i));
+    st.lines.forEach((l, j) => {
+      l.classList.toggle("on", j === i);
+      const m = l.querySelector(".mini"); if (m) m.textContent = j === i ? "❚❚" : "▶";
+    });
     const trk = st.lines[i].querySelector(".trk");
     trk.className = "trk"; trk.textContent = "Finding songs…";
     let list = [];
@@ -423,7 +432,7 @@
       setStatus(`No music listed on Ticketmaster ${where} ${whenText()}. Try a bigger radius or a nearby city.`);
       return;
     }
-    setStatus(`${shows.length} show${shows.length === 1 ? "" : "s"} ${where} ${whenText()}. Tap ▶ to hear each band's top songs, or a band's name for tickets.`);
+    setStatus(`${shows.length} show${shows.length === 1 ? "" : "s"} ${where} ${whenText()}. Tap ▶ for music, or a band's name for tickets.`);
     for (const show of shows) {
       const card = document.createElement("div");
       card.className = "act";
@@ -445,12 +454,23 @@
       const meta = document.createElement("div"); meta.className = "meta";
       meta.textContent = [show.venue, show.city, fmtTime(show.time)].filter(Boolean).join(" · ");
 
-      const lineup = document.createElement("div"); lineup.className = "lineup";
+      const lineup = document.createElement("div"); lineup.className = "lineup" + (show.acts.length > 1 ? " multi" : "");
       const btn = document.createElement("button");
       const skip = document.createElement("button");
       const lines = show.acts.map((act, i) => {
         const line = document.createElement("div"); line.className = "who";
         line.dataset.band = norm(act.name);
+        if (show.acts.length > 1) {
+          // Small play button: start with this band's songs.
+          const mini = document.createElement("button");
+          mini.className = "mini"; mini.type = "button"; mini.textContent = "▶";
+          mini.setAttribute("aria-label", `Play ${act.name}`);
+          mini.addEventListener("click", () => {
+            if (now_ && now_.btn === btn && now_.band === i) stopCurrent();
+            else startShow(card, btn, skip, show.acts, lines, i);
+          });
+          line.append(mini);
+        }
         line.append(ticketLink(act.name));
         const role = document.createElement("span"); role.className = "role";
         role.textContent = show.acts.length === 1 ? "" : (i === 0 ? "headliner" : "warm-up");
