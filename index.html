@@ -114,6 +114,7 @@
 
   <footer>
     Shows from the Ticketmaster Discovery API. 30-second samples from Deezer and iTunes.
+    · <a href="privacy.html">Privacy</a>
   </footer>
 </div>
 
@@ -602,6 +603,11 @@
   const last = store.get("lastPlace");
   if (last) $("place").value = last;
 })();
+</script>
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => { navigator.serviceWorker.register("sw.js").catch(() => {}); });
+  }
 </script>
 </body>
 </html>
